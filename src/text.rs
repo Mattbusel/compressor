@@ -134,4 +134,8 @@ const STOPWORDS: &[&str] = &[
     "both", "each", "few", "more", "most", "other", "some", "such", "no", "nor", "not", "only",
     "own", "same", "so", "than", "too", "very", "can", "will", "just", "should", "now", "also",
     "get", "got", "make", "made", "use", "used", "using", "via", "per", "etc", "really",
+    // Structural function words: present in copy but not claim bearing, so they
+    // should not count for or against groundedness.
+    "without", "within", "into", "onto", "across", "between", "through", "around", "upon",
+    "your", "every", "because", "however", "therefore", "still", "rather", "would",
 ];

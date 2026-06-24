@@ -117,26 +117,31 @@ for kind in ENGINES {
 }
 ```
 
-Below it, `self.engine.tagline()` explains the tradeoff, and when the selected
-engine needs the key, a quiet "needs ANTHROPIC_API_KEY" hint sits next to the
-Compress button.
+Below it, `self.engine.tagline()` explains the tradeoff. A **load example**
+button fills the fields with a built in sample for a one click demo, and the
+Compress button is mirrored by a **Ctrl + Enter** shortcut handled in `update`.
 
 ## Rendering a graded result
 
 `render_result` draws, in order:
 
+- a **compression readout** (`compression_readout`): the thesis as a headline
+  number, the input word count down to the one sentence promise, with the
+  percent reduction set large in vermilion,
 - the **core need** card,
-- the **promise** card, with a groundedness badge ("94% grounded") colored by
-  band on the right, and, if any terms are unsupported, a line naming them,
+- the **promise** card, with the **ink coverage meter** (`ink_meter`) under it:
+  a paper track that animates its fill to the groundedness score in the band
+  color (`animate_value_with_time`), captioned "N% inked", plus a "thin ink" line
+  naming any unsupported terms,
 - a **quality checks** card with readability and groundedness chips and either a
-  green "no issues" line or the constraint flags,
+  green "clean proof" line or the constraint flags,
 - the **three placements**, rendered uniformly from `compression.placements()`,
   each with a Copy button and, for the Google headlines, a live `n/30` character
   count that turns red on overrun,
-- and the **explainability panel**, when the engine left a trace.
+- and the **proof sheet** panel, when the engine left a trace.
 
-The groundedness badge color comes from a small `ground_color` helper: green at
-85 and above, amber at 70 to 84, red below.
+The meter color comes from a small `ground_color` helper: well inked vermilion at
+85 and above, ochre at 70 to 84, misprint red below.
 
 ## The explainability panel
 
@@ -202,5 +207,7 @@ mutating its `text_styles`, `visuals`, and `spacing`, and calling `set_style`.
 - **`Clone` on `egui::Context`**: wake the UI when the result is ready.
 - **closures** (`impl FnOnce(&mut Ui)`): the composable `card` helper.
 - **`egui::Painter`**: custom drawing for the rule, registration marks, and meter.
+- **`animate_value_with_time`**: the ink meter eases its fill in on each result.
+- **keyboard input** (`ctx.input` + `Key::Enter`): the Ctrl + Enter shortcut.
 - **std file IO** (`keystore`): remember the key on this device, no extra crate.
 - **design tokens** (`const` colors, spacing, type scale): one source of truth.

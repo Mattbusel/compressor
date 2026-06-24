@@ -20,14 +20,15 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 
 use eframe::egui;
 use egui::{
-    pos2, vec2, Align, Align2, Button, Color32, CollapsingHeader, FontFamily, FontId, Frame,
-    Layout, Margin, Rect, RichText, Rounding, ScrollArea, Sense, Spinner, Stroke, TextEdit,
+    pos2, vec2, Align, Align2, Button, Color32, CollapsingHeader, FontFamily, FontId, Frame, Id,
+    Key, Layout, Margin, Rect, RichText, Rounding, ScrollArea, Sense, Spinner, Stroke, TextEdit,
     TextStyle, Vec2,
 };
 
 use crate::analysis::{self, Flag, GroundednessReport, Readability};
 use crate::domain::{AudienceInput, Compression, PlacementContent, ProductInput};
 use crate::engine::{self, EngineError, EngineKind, EngineOutput};
+use crate::text;
 
 // --- Pressroom design tokens ----------------------------------------------
 //
@@ -39,7 +40,7 @@ const INK_2: Color32 = Color32::from_rgb(0x21, 0x1A, 0x12); // secondary ground 
 const INK_LINE: Color32 = Color32::from_rgb(0x33, 0x2A, 0x1C); // hairline on ink
 
 const PAPER: Color32 = Color32::from_rgb(0xEC, 0xE3, 0xD0); // card fill
-const PAPER_WELL: Color32 = Color32::from_rgb(0xE0, 0xD5, 0xBC); // input wells
+const PAPER_WELL: Color32 = Color32::from_rgb(0xDD, 0xCE, 0xAF); // input wells, warm
 const PAPER_EDGE: Color32 = Color32::from_rgb(0xC9, 0xBA, 0x9A); // card / input borders
 
 const INK_TEXT: Color32 = Color32::from_rgb(0x24, 0x1C, 0x12); // text on paper
@@ -70,6 +71,11 @@ const RADIUS: f32 = 4.0; // crisp, printed block corners
 const RADIUS_SM: f32 = 3.0;
 
 const ENGINES: [EngineKind; 3] = [EngineKind::Heuristic, EngineKind::Hybrid, EngineKind::Llm];
+
+/// A built in sample so the tool can be demoed in one click.
+const EXAMPLE_PRODUCT: &str = "Ledger is invoicing software for freelance designers. It tracks the hours you spend in your design tools and turns them into client-ready invoices in one click. Most freelancers lose money by forgetting to bill small tasks, and waste hours rebuilding their timesheets at the end of every month.";
+const EXAMPLE_AUDIENCE: &str =
+    "Freelance designers who juggle several clients at once and would rather be designing than doing admin.";
 
 /// Install the Pressroom theme onto the egui context.
 fn install_theme(ctx: &egui::Context) {
@@ -124,6 +130,7 @@ struct ResultBundle {
     promise_ground: GroundednessReport,
     readability: Readability,
     flags: Vec<Flag>,
+    input_words: usize,
 }
 
 /// The explicit UI state machine.
@@ -223,6 +230,7 @@ impl CompressorApp {
         let ctx = ctx.clone();
 
         self.runtime.spawn(async move {
+            let input_words = text::words(&grounded_src).len();
             let result = engine::run(kind, api_key, product, audience).await.map(|output| {
                 let grounded = analysis::Grounded::build(&grounded_src);
                 let promise_ground = grounded.report(output.compression.promise.as_str());
@@ -233,6 +241,7 @@ impl CompressorApp {
                     promise_ground,
                     readability,
                     flags,
+                    input_words,
                 }
             });
             let _ = tx.send(result);
@@ -265,6 +274,15 @@ impl eframe::App for CompressorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_result();
 
+        // Ctrl + Enter compresses when both fields are filled and nothing is in
+        // flight, so the tool is usable without reaching for the mouse.
+        let busy = matches!(self.state, UiState::Loading);
+        let ready =
+            !self.product_text.trim().is_empty() && !self.audience_text.trim().is_empty();
+        if ready && !busy && ctx.input(|i| i.modifiers.ctrl && i.key_pressed(Key::Enter)) {
+            self.submit(ctx);
+        }
+
         egui::CentralPanel::default()
             .frame(
                 Frame::none()
@@ -273,13 +291,24 @@ impl eframe::App for CompressorApp {
             )
             .show(ctx, |ui| {
                 ScrollArea::vertical().show(ui, |ui| {
-                    self.key_bar(ui);
-                    ui.add_space(SP_MD);
-                    self.header(ui);
-                    ui.add_space(SP_LG);
-                    self.inputs(ui, ctx);
-                    ui.add_space(SP_LG);
-                    self.output(ui);
+                    // Center the content in a fixed max width column so lines do
+                    // not run the full width of a large monitor.
+                    let avail = ui.available_width();
+                    let max_w = 1040.0_f32.min(avail);
+                    let pad = ((avail - max_w) / 2.0).max(0.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(pad);
+                        ui.vertical(|ui| {
+                            ui.set_width(max_w);
+                            self.key_bar(ui);
+                            ui.add_space(SP_MD);
+                            self.header(ui);
+                            ui.add_space(SP_LG);
+                            self.inputs(ui, ctx);
+                            ui.add_space(SP_LG);
+                            self.output(ui);
+                        });
+                    });
                 });
             });
     }
@@ -407,7 +436,18 @@ impl CompressorApp {
 
     fn inputs(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         paper_card(ui, |ui| {
-            eyebrow(ui, "SET THE ENGINE");
+            ui.horizontal(|ui| {
+                eyebrow(ui, "SET THE ENGINE");
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let load = Button::new(RichText::new("load example").size(TS_SMALL).color(INK_MUTED))
+                        .fill(PAPER_WELL)
+                        .rounding(Rounding::same(RADIUS_SM));
+                    if ui.add(load).clicked() {
+                        self.product_text = EXAMPLE_PRODUCT.to_owned();
+                        self.audience_text = EXAMPLE_AUDIENCE.to_owned();
+                    }
+                });
+            });
             ui.add_space(SP_XS);
             ui.horizontal(|ui| {
                 for kind in ENGINES {
@@ -473,6 +513,9 @@ impl CompressorApp {
                             .size(TS_SMALL)
                             .color(DANGER),
                     );
+                } else if !busy {
+                    ui.add_space(SP_SM);
+                    ui.label(RichText::new("or press Ctrl + Enter").size(TS_SMALL).color(INK_MUTED));
                 }
             });
         });
@@ -503,6 +546,11 @@ impl CompressorApp {
 /// Render the full graded result.
 fn render_result(ui: &mut egui::Ui, bundle: &ResultBundle) {
     let c = &bundle.output.compression;
+
+    // The thesis as a headline number: how far the input was compressed.
+    let promise_words = text::words(c.promise.as_str()).len();
+    compression_readout(ui, bundle.input_words, promise_words);
+    ui.add_space(SP_MD);
 
     paper_card(ui, |ui| {
         eyebrow(ui, "CORE NEED");
@@ -701,14 +749,18 @@ fn draw_regmark(painter: &egui::Painter, center: egui::Pos2, r: f32, color: Colo
 /// The ink coverage meter: a paper track filled to the groundedness fraction in
 /// the band color, with the printed percent beside it. Groundedness as ink.
 fn ink_meter(ui: &mut egui::Ui, score: u8) {
-    let fraction = (score as f32 / 100.0).clamp(0.0, 1.0);
     let band = ground_color(score);
+    // Animate the fill so the meter inks in when a result appears.
+    let target = (score as f32 / 100.0).clamp(0.0, 1.0);
+    let fraction = ui.ctx().animate_value_with_time(Id::new("ink_meter_fill"), target, 0.5);
 
-    // Allocate the full row, reserve a strip on the right for the printed value.
+    // Allocate the full row; reserve a fixed strip on the right for the printed
+    // value, and right anchor the label so it never clips at the edge.
     let full_width = ui.available_width();
     let (resp, painter) = ui.allocate_painter(vec2(full_width, 18.0), Sense::hover());
     let full = resp.rect;
-    let meter_width = (full.width() - 76.0).max(60.0);
+    let label_strip = 96.0;
+    let meter_width = (full.width() - label_strip).max(60.0);
     let track = Rect::from_min_size(full.min, vec2(meter_width, 16.0));
 
     painter.rect_filled(track, Rounding::same(RADIUS_SM), PAPER_WELL);
@@ -717,12 +769,39 @@ fn ink_meter(ui: &mut egui::Ui, score: u8) {
     painter.rect_filled(fill, Rounding::same(RADIUS_SM), band);
 
     painter.text(
-        pos2(track.right() + SP_SM, track.center().y),
-        Align2::LEFT_CENTER,
+        pos2(full.right(), track.center().y),
+        Align2::RIGHT_CENTER,
         format!("{score}% inked"),
         FontId::monospace(TS_SMALL),
         band,
     );
+}
+
+/// A headline readout of how far the input compressed, styled as a press stat.
+fn compression_readout(ui: &mut egui::Ui, words_in: usize, words_out: usize) {
+    let reduction = if words_in > 0 {
+        ((1.0 - words_out as f32 / words_in as f32) * 100.0).clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+    paper_card(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                eyebrow(ui, "COMPRESSION");
+                ui.add_space(SP_XS);
+                ui.label(
+                    RichText::new(format!(
+                        "{words_in} words in, down to a {words_out}-word promise"
+                    ))
+                    .size(TS_BODY)
+                    .color(INK_TEXT),
+                );
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(RichText::new(format!("{reduction:.0}%")).size(32.0).strong().color(VERMILION));
+            });
+        });
+    });
 }
 
 // --- Small UI helpers -----------------------------------------------------
