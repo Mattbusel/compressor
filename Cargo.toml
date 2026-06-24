@@ -1,0 +1,43 @@
+[package]
+name = "compressor"
+version = "0.1.0"
+edition = "2021"
+description = "Collapse the abstraction stack between a product and the customer who needs it."
+authors = ["Compressor"]
+license = "MIT"
+
+[dependencies]
+# Native Rust GUI. eframe is the application shell around egui (the immediate
+# mode UI library). We disable default features and opt in to the glow (OpenGL)
+# renderer plus the bundled default fonts, which keeps the dependency set lean.
+eframe = { version = "0.29", default-features = false, features = ["default_fonts", "glow"] }
+egui = "0.29"
+
+# Async runtime. We drive the network call on a tokio runtime so the UI thread
+# never blocks. "net" pulls in the IO driver, "time" the timer driver, and
+# "rt-multi-thread" the multi threaded scheduler.
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "time"] }
+
+# HTTP client. rustls-tls avoids a system OpenSSL dependency, which matters for
+# shipping one self contained Windows .exe.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Typed (de)serialization of the API payloads and the model's JSON answer.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Ergonomic, derive based error enums for every fallible path.
+thiserror = "1"
+
+# Release profile tuned for a small, single binary.
+# opt-level "z"   : optimize aggressively for size.
+# lto             : link time optimization across the whole program.
+# codegen-units 1 : one codegen unit lets the optimizer see everything.
+# panic = abort   : drop the unwinding machinery (smaller binary).
+# strip           : remove debug symbols from the final executable.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
