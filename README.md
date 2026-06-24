@@ -173,4 +173,4 @@ briefly explained where they appear: the newtype pattern, enum sum types,
 impls, lifetimes, and the design token approach to theming. The goal is that
 reading the code teaches why each construct is there, not just what it does.
 
-There are no emdashes anywhere in the code comments or documentation, by design.
+
