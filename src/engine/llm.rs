@@ -24,8 +24,32 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_MODEL: &str = "claude-opus-4-8";
 const MAX_TOKENS: u32 = 1024;
 
-/// The model backed engine. A unit struct: it holds no state.
-pub struct LlmEngine;
+/// The model backed engine.
+///
+/// It holds an optional API key supplied by the UI. When that key is absent or
+/// blank it falls back to the `ANTHROPIC_API_KEY` environment variable, so the
+/// app works whether the user pastes the key in the window or sets it in the
+/// environment.
+pub struct LlmEngine {
+    api_key: Option<String>,
+}
+
+impl LlmEngine {
+    pub fn new(api_key: Option<String>) -> Self {
+        Self { api_key }
+    }
+
+    /// Resolve the effective key: the UI supplied value wins, the environment is
+    /// the fallback, and a blank value counts as absent.
+    fn resolve_key(&self) -> Result<String, EngineError> {
+        self.api_key
+            .clone()
+            .filter(|k| !k.trim().is_empty())
+            .or_else(|| std::env::var(super::API_KEY_ENV).ok())
+            .filter(|k| !k.trim().is_empty())
+            .ok_or(EngineError::MissingApiKey)
+    }
+}
 
 impl CompressionEngine for LlmEngine {
     async fn compress(
@@ -33,7 +57,8 @@ impl CompressionEngine for LlmEngine {
         product: ProductInput,
         audience: AudienceInput,
     ) -> Result<EngineOutput, EngineError> {
-        let compression = compress_via_api(&product, &audience).await?;
+        let key = self.resolve_key()?;
+        let compression = compress_via_api(&key, &product, &audience).await?;
         // The model leaves no deterministic trace to show.
         Ok(EngineOutput {
             compression,
@@ -84,11 +109,10 @@ struct RawCompression {
 
 /// The actual API round trip, kept as a free function for readability.
 async fn compress_via_api(
+    api_key: &str,
     product: &ProductInput,
     audience: &AudienceInput,
 ) -> Result<Compression, EngineError> {
-    let api_key = std::env::var(super::API_KEY_ENV).map_err(|_| EngineError::MissingApiKey)?;
-
     let system = prompt::system_prompt();
     let user = prompt::user_prompt(product, audience);
 

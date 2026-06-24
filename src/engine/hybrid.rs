@@ -18,8 +18,16 @@ use crate::domain::{AudienceInput, ProductInput};
 
 use super::{heuristic, CompressionEngine, EngineError, EngineOutput, LlmEngine, Trace};
 
-/// The hybrid engine. A unit struct: it holds no state.
-pub struct HybridEngine;
+/// The hybrid engine. Holds the optional API key it passes to the model.
+pub struct HybridEngine {
+    api_key: Option<String>,
+}
+
+impl HybridEngine {
+    pub fn new(api_key: Option<String>) -> Self {
+        Self { api_key }
+    }
+}
 
 impl CompressionEngine for HybridEngine {
     async fn compress(
@@ -36,7 +44,9 @@ impl CompressionEngine for HybridEngine {
         let grounded = Grounded::build(&combined);
 
         // Then let the model write the copy (this consumes the inputs).
-        let llm_output = LlmEngine.compress(product, audience).await?;
+        let llm_output = LlmEngine::new(self.api_key.clone())
+            .compress(product, audience)
+            .await?;
         let compression = llm_output.compression;
 
         // Audit the model's promise against what the product literally is.

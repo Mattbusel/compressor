@@ -96,31 +96,31 @@ panel are all built. Next, in rough priority order:
 
 ## Setting the API key
 
-The Hybrid and LLM engines read the secret from the `ANTHROPIC_API_KEY`
-environment variable. The Heuristic engine needs nothing and runs offline. The
-key is never hardcoded and never written to disk by the app.
+The Hybrid and LLM engines need an Anthropic API key. The Heuristic engine needs
+nothing and runs entirely offline.
 
-PowerShell (current session):
+**The simplest way: paste it into the window.** Open `compressor.exe`, paste your
+key into the masked **Anthropic key** bar at the top, and use the tool. No files,
+no environment variables. Tick **remember on this device** if you want the app to
+load it automatically next time. (Remembering writes the key in plain text under
+your user profile at `%APPDATA%\Compressor\key.txt`; leave it unticked to keep the
+key in memory for the session only.)
+
+**Or set the environment variable**, which the app uses as a fallback when the
+key bar is empty:
 
 ```powershell
-$env:ANTHROPIC_API_KEY = "sk-ant-..."
+$env:ANTHROPIC_API_KEY = "sk-ant-..."   # current session
+setx ANTHROPIC_API_KEY "sk-ant-..."     # persist for your user
 ```
-
-PowerShell (persist for your user):
-
-```powershell
-setx ANTHROPIC_API_KEY "sk-ant-..."
-```
-
-Bash:
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
-If a model engine is selected without the key set, the app does not crash; it
-reports `the ANTHROPIC_API_KEY environment variable is not set` in the error
-card.
+If a model engine is selected with no key from either source, the app does not
+crash; it reports `the ANTHROPIC_API_KEY environment variable is not set` in the
+error card. The key is never hardcoded.
 
 ---
 

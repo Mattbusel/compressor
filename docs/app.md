@@ -1,8 +1,8 @@
 # app
 
-The egui interface, the custom dark theme, and the async to UI bridge. This is
-where the typed pieces become something a person uses: pick an engine, compress,
-and see the result graded and explained.
+The egui interface, the Pressroom theme, and the async to UI bridge. This is
+where the typed pieces become something a person uses: enter a key, pick an
+engine, compress, and see the result graded and explained.
 
 Source: [`src/app.rs`](../src/app.rs)
 
@@ -75,11 +75,12 @@ creates a channel, keeps the receiver, and spawns the selected engine:
 
 ```rust
 let kind = self.engine;
+let api_key = self.effective_key();   // the window field, or None (env fallback)
 let grounded_src = format!("{}\n{}", product.as_str(), audience.as_str());
 let ctx = ctx.clone();
 
 self.runtime.spawn(async move {
-    let result = engine::run(kind, product, audience).await.map(|output| {
+    let result = engine::run(kind, api_key, product, audience).await.map(|output| {
         // The scorer sits outside the engine and grades its output.
         let grounded = analysis::Grounded::build(&grounded_src);
         let promise_ground = grounded.report(output.compression.promise.as_str());
@@ -150,16 +151,45 @@ engines), a collapsing panel shows the engine's work:
 
 No model backed tool can offer this, which is exactly why it is shown by default.
 
-## The custom theme
+## The API key entry
+
+The key bar sits on the ink ground above the wordmark: a masked single line field
+(`TextEdit::password`), a show / hide toggle, a status indicator that reads
+"KEY LOADED" or "NO KEY", and a "remember on this device" checkbox.
+
+`effective_key` returns the trimmed field value, or `None` when it is blank; the
+model engines then fall back to the `ANTHROPIC_API_KEY` environment variable, so
+either source works. When "remember" is ticked, the key is persisted with the
+small `keystore` module (std file IO only, no extra dependency) to
+`%APPDATA%\Compressor\key.txt`, and loaded on startup. Unticking it deletes the
+file. The path is plain text under the user profile, which the bar states
+explicitly when the box is checked.
+
+## The Pressroom theme
 
 `install_theme`, called once at startup, defines the look from named design
-tokens: a deep charcoal base, layered surfaces, hairline borders, two text
-weights, and a single confident coral accent, plus green and amber for the
-groundedness and quality signals. There is a spacing scale, a type scale mapped
-onto egui's semantic text styles, and rounded bordered widgets across every
-interaction state. The whole look lives in one place, applied by cloning the
-`Style`, mutating its `text_styles`, `visuals`, and `spacing`, and calling
-`set_style`.
+tokens. The concept is a letterpress instrument: a deep warm ink ground, bone
+paper cards, a single vermilion ink accent, and printed greens, ochres, and reds
+for the quality signals. Text is dark ink on the paper cards and paper on the ink
+ground, so `override_text_color` defaults to ink and on ink elements are colored
+explicitly (an explicit `RichText` color always wins).
+
+The character comes from custom painting with `egui::Painter`, not just colored
+rectangles:
+
+- the **wordmark** is spaced caps ("C O M P R E S S O R") for a pressed feel,
+- a **vermilion rule** under the header is capped with printer's **registration
+  marks** (a circle with a centered cross), drawn by `draw_regmark`,
+- groundedness is an **ink coverage meter** (`ink_meter`): a paper track filled to
+  the score in the band color, captioned "N% inked", because a grounded promise is
+  a well inked one,
+- the **Compress button** is an inked platen (vermilion fill, spaced caps),
+- the engine picker chips are **ink stamps** (vermilion when selected),
+- labels are monospace uppercase eyebrows, and cards have crisp printed corners.
+
+There is a spacing scale and a type scale mapped onto egui's semantic text
+styles. The whole look lives in one place, applied by cloning the `Style`,
+mutating its `text_styles`, `visuals`, and `spacing`, and calling `set_style`.
 
 ## Rust primitives used in this module
 
@@ -171,4 +201,6 @@ interaction state. The whole look lives in one place, applied by cloning the
 - **tokio runtime + boxed futures**: run any selected engine uniformly.
 - **`Clone` on `egui::Context`**: wake the UI when the result is ready.
 - **closures** (`impl FnOnce(&mut Ui)`): the composable `card` helper.
+- **`egui::Painter`**: custom drawing for the rule, registration marks, and meter.
+- **std file IO** (`keystore`): remember the key on this device, no extra crate.
 - **design tokens** (`const` colors, spacing, type scale): one source of truth.

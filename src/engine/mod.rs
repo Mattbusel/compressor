@@ -153,12 +153,28 @@ pub type BoxedCompression =
 
 /// Dispatch to the selected engine, returning a uniform boxed future.
 ///
-/// Each concrete engine's future is known to be `Send`, so boxing it into a
-/// single type lets the app `spawn` the result without caring which engine ran.
-pub fn run(kind: EngineKind, product: ProductInput, audience: AudienceInput) -> BoxedCompression {
+/// `api_key` is the value the user typed into the window (or `None`); the model
+/// engines fall back to the `ANTHROPIC_API_KEY` environment variable when it is
+/// absent. The deterministic engine ignores it entirely. Each concrete engine's
+/// future is known to be `Send`, so boxing it into a single type lets the app
+/// `spawn` the result without caring which engine ran.
+pub fn run(
+    kind: EngineKind,
+    api_key: Option<String>,
+    product: ProductInput,
+    audience: AudienceInput,
+) -> BoxedCompression {
     match kind {
         EngineKind::Heuristic => Box::pin(HeuristicEngine.compress(product, audience)),
-        EngineKind::Hybrid => Box::pin(HybridEngine.compress(product, audience)),
-        EngineKind::Llm => Box::pin(LlmEngine.compress(product, audience)),
+        // The key holding engines are moved into an owned async block so the
+        // boxed future owns the engine rather than borrowing a temporary.
+        EngineKind::Hybrid => {
+            let engine = HybridEngine::new(api_key);
+            Box::pin(async move { engine.compress(product, audience).await })
+        }
+        EngineKind::Llm => {
+            let engine = LlmEngine::new(api_key);
+            Box::pin(async move { engine.compress(product, audience).await })
+        }
     }
 }
