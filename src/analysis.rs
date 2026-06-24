@@ -254,10 +254,30 @@ pub const HYPE_WORDS: &[&str] = &[
     "guaranteed", "10x", "limitless",
 ];
 
-/// Count hype words present in a piece of copy (substring match, lowercased).
-pub fn hype_count(copy: &str) -> usize {
+/// The hype words present in a piece of copy.
+///
+/// Plain alphabetic hype words must match as whole words (so "best" does not
+/// fire inside "bestsellers"); hyphenated or numeric entries like "world-class"
+/// are matched as substrings because tokenization would split them.
+pub fn hype_hits(copy: &str) -> Vec<&'static str> {
     let lower = copy.to_lowercase();
-    HYPE_WORDS.iter().filter(|h| lower.contains(*h)).count()
+    let tokens: HashSet<String> = text::words(copy).into_iter().collect();
+    HYPE_WORDS
+        .iter()
+        .copied()
+        .filter(|h| {
+            if h.contains('-') || h.chars().any(|c| c.is_ascii_digit()) {
+                lower.contains(h)
+            } else {
+                tokens.contains(*h)
+            }
+        })
+        .collect()
+}
+
+/// Count hype words present in a piece of copy.
+pub fn hype_count(copy: &str) -> usize {
+    hype_hits(copy).len()
 }
 
 /// A single constraint issue, phrased for the user.
@@ -289,9 +309,7 @@ pub fn constraint_flags(c: &Compression) -> Vec<Flag> {
         c.google_headlines.join(" "),
         c.landing_hero,
     );
-    let lower = combined.to_lowercase();
-    let mut found: Vec<&str> = HYPE_WORDS.iter().copied().filter(|h| lower.contains(h)).collect();
-    found.dedup();
+    let found = hype_hits(&combined);
     if !found.is_empty() {
         flags.push(Flag {
             message: format!("Hype language detected: {}", found.join(", ")),
@@ -376,6 +394,26 @@ mod tests {
         let r = readability("This tool saves you time.");
         assert!(r.flesch >= 0.0 && r.flesch <= 120.0);
         assert!(!r.grade.is_empty());
+    }
+
+    #[test]
+    fn hype_matches_whole_words_only() {
+        // "best" must not fire inside "bestsellers".
+        assert_eq!(hype_count("our bestsellers fly off the shelf"), 0);
+        // standalone "best" should fire.
+        assert!(hype_count("the best tool for the job") >= 1);
+        // hyphenated entries still match as substrings.
+        assert!(hype_count("a world-class, seamless tool") >= 1);
+    }
+
+    #[test]
+    fn stemmer_matches_word_families() {
+        // "running" -> "run", "saves" -> "save": copy that reuses the product's
+        // own vocabulary in other forms should read as grounded.
+        let grounded = Grounded::build("we run out of stock and save you hours");
+        let report = grounded.report("running stock, saves hours");
+        assert!(report.unsupported.is_empty(), "unexpected: {:?}", report.unsupported);
+        assert_eq!(report.score, 100);
     }
 
     #[test]

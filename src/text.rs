@@ -69,18 +69,58 @@ pub fn content_words(text: &str) -> Vec<String> {
 /// word. Longer, more specific suffixes are tried first.
 pub fn stem(word: &str) -> String {
     let w = word.to_lowercase();
+    // Derivational and verb suffixes, longest first. Plurals are handled
+    // separately below so that "saves" stems to "save", not "sav".
     const SUFFIXES: &[&str] = &[
         "izations", "ization", "ational", "ations", "ation", "ingly", "edly", "ings", "ing",
-        "edness", "ness", "ments", "ment", "tions", "tion", "ers", "ies", "ied", "er", "ed", "ly",
-        "es", "s",
+        "edness", "ness", "ments", "ment", "tions", "tion", "ers", "er", "ed", "ly",
     ];
     for suffix in SUFFIXES {
         // Keep at least three characters of root so we do not over strip.
         if w.len() > suffix.len() + 2 && w.ends_with(suffix) {
-            return w[..w.len() - suffix.len()].to_owned();
+            let root = w[..w.len() - suffix.len()].to_owned();
+            // "running" -> "run", "stopping" -> "stop" (but keep "spelling").
+            if *suffix == "ing" || *suffix == "ed" {
+                return undouble(root);
+            }
+            return root;
         }
     }
+    // Plurals and third person singular.
+    if w.len() > 4 && w.ends_with("ies") {
+        return format!("{}y", &w[..w.len() - 3]); // categories -> category
+    }
+    if w.len() > 3 && w.ends_with("es") {
+        let before = w[..w.len() - 2].chars().last();
+        let needs_es = matches!(before, Some('s' | 'x' | 'z' | 'o'))
+            || w.ends_with("ches")
+            || w.ends_with("shes");
+        if needs_es {
+            return w[..w.len() - 2].to_owned(); // boxes -> box, watches -> watch
+        }
+        return w[..w.len() - 1].to_owned(); // saves -> save, invoices -> invoice
+    }
+    if w.len() > 3 && w.ends_with('s') && !w.ends_with("ss") {
+        return w[..w.len() - 1].to_owned(); // counts -> count
+    }
     w
+}
+
+/// Collapse a final doubled consonant left by stripping "ing"/"ed", except for
+/// l, s, z, so "running" becomes "run" while "spelling" stays "spell". Only
+/// applied when at least three characters remain.
+fn undouble(root: String) -> String {
+    let chars: Vec<char> = root.chars().collect();
+    let n = chars.len();
+    if n >= 4 {
+        let last = chars[n - 1];
+        let prev = chars[n - 2];
+        let vowel = matches!(last, 'a' | 'e' | 'i' | 'o' | 'u');
+        if last == prev && !vowel && !matches!(last, 'l' | 's' | 'z') {
+            return chars[..n - 1].iter().collect();
+        }
+    }
+    root
 }
 
 /// Estimate the number of syllables in a word.
@@ -138,4 +178,5 @@ const STOPWORDS: &[&str] = &[
     // should not count for or against groundedness.
     "without", "within", "into", "onto", "across", "between", "through", "around", "upon",
     "your", "every", "because", "however", "therefore", "still", "rather", "would",
+    "less", "more", "stop", "much", "many", "lot",
 ];
