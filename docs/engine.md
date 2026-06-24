@@ -1,166 +1,152 @@
 # engine
 
-The async Anthropic Messages API client. This module owns every fallible
-interaction with the outside world: reading the API key, building and sending
-the HTTP request, and parsing the model's answer into domain types.
+The compression engines and the interface they share. This is where the central
+architectural move lives: one trait, three implementations, and a dispatcher the
+UI calls without caring which engine ran.
 
-Source: [`src/engine.rs`](../src/engine.rs)
+Source: [`src/engine/`](../src/engine/) (`mod.rs`, `heuristic.rs`, `hybrid.rs`,
+`llm.rs`)
 
-## The single entry point
-
-```rust
-pub async fn compress(
-    product: ProductInput,
-    audience: AudienceInput,
-) -> Result<Compression, EngineError>
-```
-
-`async fn` means this returns a future rather than running immediately. The
-caller drives it with `.await` on a tokio runtime (see [docs/app.md](app.md) for
-how the UI does that without blocking). The function takes its inputs **by
-value** (owned `ProductInput` / `AudienceInput`) so the future can be moved into
-a spawned task with no borrowed data tying it to the caller's stack.
-
-The body reads top to bottom as the happy path, with each failure short
-circuiting through the `?` operator:
-
-1. Read `ANTHROPIC_API_KEY` from the environment, or return `MissingApiKey`.
-2. Build the system and user prompts (pure, from the `prompt` module).
-3. Serialize and POST the request.
-4. Check the HTTP status; a non success status returns `BadStatus`.
-5. Parse the response envelope, find the text block, slice out the JSON object,
-   and parse it into the typed result.
-
-## Configuration constants
+## The interface
 
 ```rust
-const API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
-const API_URL: &str = "https://api.anthropic.com/v1/messages";
-const ANTHROPIC_VERSION: &str = "2023-06-01";
-const DEFAULT_MODEL: &str = "claude-opus-4-8";
-const MAX_TOKENS: u32 = 1024;
+#[allow(async_fn_in_trait)]
+pub trait CompressionEngine {
+    async fn compress(
+        &self,
+        product: ProductInput,
+        audience: AudienceInput,
+    ) -> Result<EngineOutput, EngineError>;
+}
 ```
 
-The model is Anthropic's most capable Opus tier model. The copy is short, so a
-small `max_tokens` ceiling is plenty. The version string is the value the
-Messages API requires in the `anthropic-version` header. The key is read from
-the environment and never hardcoded.
+`async fn` in a trait has been stable since Rust 1.75. We use it through concrete
+types, never through `dyn`, which sidesteps the usual object safety and `Send`
+caveats. Each engine takes its inputs by value so the returned future owns
+everything it needs and can be moved onto the runtime.
+
+Every engine returns the same shape:
+
+```rust
+pub struct EngineOutput {
+    pub compression: Compression,
+    pub trace: Option<Trace>,
+}
+```
+
+The `Trace` is the explainability payload. The deterministic and hybrid engines
+fill it; the pure LLM engine leaves it `None`, because a model leaves no
+deterministic work to show.
+
+## Runtime dispatch with boxed futures
+
+The UI picks an engine at runtime, so we need a single type to spawn regardless
+of choice. Each engine's `compress` returns a different concrete future, so we
+box them into one type:
+
+```rust
+pub type BoxedCompression =
+    Pin<Box<dyn Future<Output = Result<EngineOutput, EngineError>> + Send>>;
+
+pub fn run(kind: EngineKind, product: ProductInput, audience: AudienceInput) -> BoxedCompression {
+    match kind {
+        EngineKind::Heuristic => Box::pin(HeuristicEngine.compress(product, audience)),
+        EngineKind::Hybrid => Box::pin(HybridEngine.compress(product, audience)),
+        EngineKind::Llm => Box::pin(LlmEngine.compress(product, audience)),
+    }
+}
+```
+
+Because each concrete future is known to be `Send`, boxing it into a trait object
+is sound, and the app can `spawn` the result uniformly. `EngineKind` is an enum
+sum type, so the `match` is exhaustively checked.
 
 ## The exhaustive error enum
 
-`EngineError` is the heart of the module's contract. It is an enum sum type with
-one variant per failure mode, deriving `thiserror::Error` so each carries a
-`Display` message:
+`EngineError` covers every failure mode across all three engines:
 
 ```rust
 pub enum EngineError {
-    MissingApiKey,                         // env var not set
-    Http(#[from] reqwest::Error),          // transport failure
-    BadStatus { status: u16, body: String }, // non success HTTP status
-    NoContent,                             // no text block to read
-    MalformedJson(String),                 // response or model JSON did not parse
+    MissingApiKey,                          // env var not set (model engines)
+    Http(#[from] reqwest::Error),           // transport failure
+    BadStatus { status: u16, body: String },// non success HTTP status
+    NoContent,                              // no text block in the response
+    MalformedJson(String),                  // response or model JSON did not parse
+    InsufficientInput(String),              // heuristic could not extract enough
 }
 ```
 
-Two details worth calling out:
+`#[from] reqwest::Error` lets `?` convert transport errors automatically.
+`InsufficientInput` is new for the deterministic engine, which can fail if the
+input is too sparse to extract a need or a slot from.
 
-- `#[from] reqwest::Error` generates a `From<reqwest::Error>` impl, which is what
-  lets `?` automatically convert a transport error into `EngineError::Http`. You
-  write `client.post(...).send().await?` and the conversion is implicit.
-- `BadStatus` keeps both the numeric status and the response body, so the error
-  card in the UI can show exactly what the API said.
+## HeuristicEngine: deterministic compression
 
-Because the UI matches on the result type and the engine returns
-`Result<Compression, EngineError>`, every one of these failures has a precise,
-typed path to a message the user can read.
+Source: [`src/engine/heuristic.rs`](../src/engine/heuristic.rs)
 
-## Typed request and response payloads
+No model is involved. The pipeline:
 
-The request is a `#[derive(Serialize)]` struct that **borrows** the prompt
-strings via a lifetime, so building it copies nothing:
+1. **Extract the core need.** Split the combined input into sentences, score them
+   with TextRank (see [docs/analysis.md](analysis.md)), and pick the sentence
+   that is both central and need shaped. The need is extracted, not generated.
+2. **Extract promise slots.** The audience phrase is the first run of content
+   words from the audience input. The outcome is a benefit verb present in the
+   product (paired with a benefit object if one is also present, for example
+   "save hours"). The mechanism is the product's most frequent content noun.
+   Every slot is lifted from the input, so the engine cannot invent a capability.
+3. **Build and score candidates.** Fill a small grammar of promise templates,
+   then score each candidate with the groundedness scorer, readability, and a
+   hype penalty. Keep the winner. This is the disciplined version of variation:
+   not ten options dumped on the user, but the best one with its reasoning.
+4. **Format the placements.** Pure string transforms. The Google headlines are
+   built within the 30 character budget by construction (via `analysis::fit_chars`
+   truncating at a word boundary), not hoped to fit.
+5. **Record the trace.** The need source sentence and its TextRank score, the
+   chosen template, and every candidate with its scores, for the explainability
+   panel.
 
-```rust
-#[derive(Serialize)]
-struct MessagesRequest<'a> {
-    model: &'a str,
-    max_tokens: u32,
-    system: &'a str,
-    messages: Vec<RequestMessage<'a>>,
-}
-```
+The synchronous core is `compress_sync`, exposed `pub(crate)` so the hybrid
+engine can reuse it for the explainability trace.
 
-The response is `#[derive(Deserialize)]`. The API tags each content block with a
-`type` field, which we map to a Rust field named `kind`:
+## LlmEngine: model backed compression
 
-```rust
-#[derive(Deserialize)]
-struct ContentBlock {
-    #[serde(rename = "type")]
-    kind: String,
-    text: Option<String>,
-}
-```
+Source: [`src/engine/llm.rs`](../src/engine/llm.rs)
 
-`RawCompression` is the Rust mirror of the prompt's output contract. Its field
-names are exactly the JSON keys the system prompt demands, so serde validates the
-model's answer for us:
+The Anthropic Messages API client. It builds the request from the pure `prompt`
+module, calls `claude-opus-4-8`, reads the secret from `ANTHROPIC_API_KEY`, and
+parses the model's JSON answer into the domain types. Typed serde request and
+response payloads, defensive JSON extraction (slice from the first `{` to the
+last `}`), and validation into `Compression`. It returns `trace: None`.
 
-```rust
-#[derive(Deserialize)]
-struct RawCompression {
-    core_need: String,
-    promise: String,
-    meta_primary_text: String,
-    google_headlines: Vec<String>,
-    landing_hero: String,
-}
-```
+## HybridEngine: AI, kept honest
 
-## Parsing, defensively
+Source: [`src/engine/hybrid.rs`](../src/engine/hybrid.rs)
 
-We read the raw response body and parse it ourselves with `serde_json::from_str`
-so JSON failures map to `MalformedJson` rather than a generic transport error.
-We then find the first `text` block (consuming the vec with `into_iter` so the
-`String` moves out without cloning) or return `NoContent`.
+The demonstration of the whole thesis in one pass. It computes the deterministic
+trace and the grounded vocabulary from the inputs first (by reference), then lets
+the model write the copy (consuming the inputs). It runs the groundedness scorer
+over the model's promise and writes the audit into the trace notes:
 
-Before parsing the model's JSON, `extract_json_object` slices from the first `{`
-to the last `}`:
+> Model promise is 88% grounded (7 of 8 claim terms supported by the product).
+> Unsupported claims the model introduced: effortless.
 
-```rust
-fn extract_json_object(text: &str) -> Option<&str> {
-    let start = text.find('{')?;
-    let end = text.rfind('}')?;
-    if end > start { Some(&text[start..=end]) } else { None }
-}
-```
+So the user gets the model's fluency, the deterministic engine's transparency,
+and an explicit flag on any claim the model added that the product does not back.
 
-This keeps the engine robust against a model that occasionally wraps the JSON in
-a sentence or a code fence, without dragging in a full tolerant parser.
+## A note on where grading happens
 
-## Validation into the domain
-
-`build_compression` lifts the parsed JSON into the `domain::Compression` type and
-enforces the invariants serde cannot:
-
-- `core_need`, `promise`, `meta_primary_text`, and `landing_hero` are trimmed and
-  must be non empty, otherwise `MalformedJson`.
-- `google_headlines` is trimmed and filtered; at least one headline must remain.
-
-Only after these checks does it construct `CoreNeed::new(...)` and
-`Promise::new(...)`, so a `Compression` value is always a usable result.
-
-## TLS and the single binary
-
-reqwest is configured with `rustls-tls` (and default features off), which avoids
-a system OpenSSL dependency. That matters for shipping one self contained
-Windows `.exe` with no external runtime requirements.
+None of the engines grade themselves. The groundedness scorer lives in
+`analysis` and is run by the app (and, for its audit notes, by the hybrid engine)
+on the finished `Compression`. This keeps the measurement independent of the
+thing being measured, and lets the same score be shown for every engine.
 
 ## Rust primitives used in this module
 
-- **`async fn` + `.await`**: non blocking network call.
-- **serde `Serialize` / `Deserialize` derives**: typed JSON in and out.
-- **lifetimes** (`MessagesRequest<'a>`): borrow the prompt strings, no clone.
-- **enum sum type + `thiserror`**: one exhaustive `EngineError`.
-- **`?` operator and `#[from]`**: propagate and auto convert errors.
-- **`#[serde(rename = "type")]`**: map a reserved JSON key to a Rust field.
-- **`into_iter` move semantics**: take the `String` out of the response vec.
+- **trait with `async fn`** (`CompressionEngine`): the shared interface.
+- **trait impls** on unit structs (`HeuristicEngine`, `LlmEngine`, `HybridEngine`).
+- **boxed futures** (`Pin<Box<dyn Future + Send>>`): uniform runtime dispatch.
+- **enum sum types** (`EngineKind`, `EngineError`): closed engine set, exhaustive
+  failures.
+- **`?` and `#[from]`**: error propagation and auto conversion.
+- **`pub(crate)`**: share `compress_sync` across the engine module only.
+- **composition**: hybrid reuses the heuristic core and the analysis scorer.

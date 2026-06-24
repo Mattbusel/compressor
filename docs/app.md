@@ -1,16 +1,16 @@
 # app
 
 The egui interface, the custom dark theme, and the async to UI bridge. This is
-where the typed pieces become something a person uses.
+where the typed pieces become something a person uses: pick an engine, compress,
+and see the result graded and explained.
 
 Source: [`src/app.rs`](../src/app.rs)
 
 ## The shape of an egui app
 
-egui is an immediate mode UI library: there is no retained widget tree. Every
-frame, eframe calls one method and you describe the entire interface from
-scratch based on your current state. Our type plugs into that loop with a trait
-impl:
+egui is immediate mode: there is no retained widget tree. Every frame, eframe
+calls `update` and you describe the entire interface from current state. Our type
+plugs in with a trait impl:
 
 ```rust
 impl eframe::App for CompressorApp {
@@ -18,9 +18,8 @@ impl eframe::App for CompressorApp {
 }
 ```
 
-`update` runs many times per second. Because the whole UI is redrawn from state
-each frame, the cleanest way to model the screen is an explicit state machine,
-which is exactly what we do.
+Because the whole UI is redrawn from state each frame, the cleanest model is an
+explicit state machine.
 
 ## The state machine
 
@@ -28,179 +27,148 @@ which is exactly what we do.
 enum UiState {
     Idle,
     Loading,
-    Result(Compression),
+    Result(Box<ResultBundle>),
     Error(String),
 }
 ```
 
-An enum sum type makes the four possible screens mutually exclusive. You cannot
-be loading and showing a result at the same time, because the value is one
-variant at a time. The `output` method matches on `&self.state` and the compiler
-forces all four arms to be handled.
+An enum sum type makes the four screens mutually exclusive. `ResultBundle` is
+boxed because it is much larger than the other variants, which keeps the enum
+small. The bundle is the graded result:
 
-The app struct owns everything the UI needs:
+```rust
+struct ResultBundle {
+    output: EngineOutput,            // compression + optional trace
+    promise_ground: GroundednessReport,
+    readability: Readability,
+    flags: Vec<Flag>,
+}
+```
+
+The app struct owns the runtime, the selected engine, the input buffers, the
+state, and the receiver:
 
 ```rust
 pub struct CompressorApp {
     runtime: tokio::runtime::Runtime,
+    engine: EngineKind,
     product_text: String,
     audience_text: String,
     state: UiState,
-    rx: Option<Receiver<Result<Compression, EngineError>>>,
+    rx: Option<Receiver<Result<ResultBundle, EngineError>>>,
 }
 ```
 
-`product_text` and `audience_text` are the buffers bound to the two text fields.
-`rx` is `Some` only while a request is in flight.
+The engine defaults to `Heuristic`, because it is instant, offline, and needs no
+key, which is the best first impression and showcases the deterministic core.
 
 ## The async to UI bridge
 
-This is the core of keeping the interface responsive. The network call is
-asynchronous and can take seconds; the UI thread must never wait on it. The
-bridge has three parts.
+The bridge keeps the interface responsive while a model call is in flight.
 
-**1. A tokio runtime owned by the app.** Built once in `new`:
+**1. A tokio runtime owned by the app**, built once in `new` with `enable_all`
+so reqwest has the IO and timer drivers it needs.
 
-```rust
-let runtime = tokio::runtime::Builder::new_multi_thread()
-    .worker_threads(2)
-    .enable_all()
-    .build()
-    .expect("failed to start the tokio runtime");
-```
-
-`enable_all` turns on the IO and timer drivers reqwest needs.
-
-**2. An `mpsc` channel.** When the user submits, we create a
-`std::sync::mpsc` channel, keep the receiver, and move the sender into a spawned
-task:
+**2. An `mpsc` channel.** On submit, the app validates the text into domain
+newtypes (a bad input goes straight to `Error` without touching anything else),
+creates a channel, keeps the receiver, and spawns the selected engine:
 
 ```rust
-let (tx, rx) = std::sync::mpsc::channel();
-self.rx = Some(rx);
-self.state = UiState::Loading;
-
+let kind = self.engine;
+let grounded_src = format!("{}\n{}", product.as_str(), audience.as_str());
 let ctx = ctx.clone();
+
 self.runtime.spawn(async move {
-    let result = engine::compress(product, audience).await;
+    let result = engine::run(kind, product, audience).await.map(|output| {
+        // The scorer sits outside the engine and grades its output.
+        let grounded = analysis::Grounded::build(&grounded_src);
+        let promise_ground = grounded.report(output.compression.promise.as_str());
+        let readability = analysis::readability(&output.compression.meta_primary_text);
+        let flags = analysis::constraint_flags(&output.compression);
+        ResultBundle { output, promise_ground, readability, flags }
+    });
     let _ = tx.send(result);
     ctx.request_repaint();
 });
 ```
 
-The channel decouples the worker thread from the UI thread. The task runs
-`engine::compress`, sends the result back, and then calls `request_repaint` on a
-**clone** of the egui context. `egui::Context` is `Clone` and cheap to clone (it
-is a handle); cloning it lets the task wake the UI exactly when the result is
-ready, instead of the UI busy polling.
+Two things to note. First, `engine::run` returns a boxed future, so the same
+`spawn` works for any engine the user picked. Second, the grounded source is
+captured before the inputs move into the engine, and the grading runs in the task
+after the engine returns, which keeps the grading independent of the engine and
+off the UI thread. A clone of the egui context wakes the UI exactly when the
+result is ready.
 
-**3. A non blocking poll once per frame.** At the top of every `update`:
+**3. A non blocking poll once per frame.** `poll_result` calls `try_recv`, which
+returns immediately whether or not a value is ready, and advances the state
+machine when one arrives.
+
+## The engine picker
+
+The inputs card opens with a segmented control of chips, one per engine, drawn
+with a small helper that fills the selected chip with the accent color:
 
 ```rust
-fn poll_result(&mut self) {
-    let Some(rx) = &self.rx else { return; };
-    match rx.try_recv() {
-        Ok(result) => { /* transition to Result or Error */ }
-        Err(TryRecvError::Empty) => {}          // still working
-        Err(TryRecvError::Disconnected) => { /* worker died */ }
+for kind in ENGINES {
+    if engine_chip(ui, kind.label(), self.engine == kind).clicked() {
+        self.engine = kind;
     }
 }
 ```
 
-`try_recv` returns immediately whether or not a value is ready. If the channel
-is empty, we do nothing and the next frame checks again. If a value arrived, we
-move into `Result` or `Error` and drop the receiver.
+Below it, `self.engine.tagline()` explains the tradeoff, and when the selected
+engine needs the key, a quiet "needs ANTHROPIC_API_KEY" hint sits next to the
+Compress button.
 
-The flow end to end: `submit` validates the text into `domain` newtypes (a bad
-input goes straight to `Error` without touching the network), spawns the task,
-and sets `Loading`. Later frames poll, and when the result lands the state
-machine advances and the result renders.
+## Rendering a graded result
+
+`render_result` draws, in order:
+
+- the **core need** card,
+- the **promise** card, with a groundedness badge ("94% grounded") colored by
+  band on the right, and, if any terms are unsupported, a line naming them,
+- a **quality checks** card with readability and groundedness chips and either a
+  green "no issues" line or the constraint flags,
+- the **three placements**, rendered uniformly from `compression.placements()`,
+  each with a Copy button and, for the Google headlines, a live `n/30` character
+  count that turns red on overrun,
+- and the **explainability panel**, when the engine left a trace.
+
+The groundedness badge color comes from a small `ground_color` helper: green at
+85 and above, amber at 70 to 84, red below.
+
+## The explainability panel
+
+This is the moat. When `output.trace` is present (the deterministic and hybrid
+engines), a collapsing panel shows the engine's work:
+
+- the core need source sentence and its TextRank score,
+- the name of the winning promise template,
+- every promise candidate, ranked, each with its groundedness, readability, and
+  combined score, with the chosen one marked,
+- and any audit notes (for hybrid, the groundedness audit of the model's promise).
+
+No model backed tool can offer this, which is exactly why it is shown by default.
 
 ## The custom theme
 
-The look is defined once, in `install_theme`, called at startup. It is built from
-named design tokens so the styling lives in one place.
-
-**Color tokens.** A deep, slightly blue charcoal base, layered surfaces, hairline
-borders, two text weights, and a single confident accent (a warm coral) used
-sparingly:
-
-```rust
-const BG: Color32          = Color32::from_rgb(0x0F, 0x11, 0x16);
-const SURFACE: Color32     = Color32::from_rgb(0x16, 0x19, 0x20);
-const SURFACE_ALT: Color32 = Color32::from_rgb(0x1E, 0x22, 0x2B);
-const BORDER: Color32      = Color32::from_rgb(0x2A, 0x2F, 0x3A);
-const TEXT: Color32        = Color32::from_rgb(0xE6, 0xE8, 0xEC);
-const MUTED: Color32       = Color32::from_rgb(0x97, 0x9F, 0xAD);
-const ACCENT: Color32      = Color32::from_rgb(0xFF, 0x6B, 0x3D);
-```
-
-The accent appears in exactly three places: the short rule under the title, the
-primary Compress button, and small markers (the promise eyebrow and the headline
-numbers). Restraint is the point. One accent, used where it carries meaning.
-
-**Spacing scale.** A single rhythm for all gaps:
-
-```rust
-const SP_XS: f32 = 4.0;  const SP_SM: f32 = 8.0;  const SP_MD: f32 = 16.0;
-const SP_LG: f32 = 24.0; const SP_XL: f32 = 32.0;
-```
-
-**Type scale.** Concrete sizes mapped onto egui's semantic text styles
-(`Heading`, `Body`, `Small`, `Monospace`) plus explicit sizes for the display
-title and the uppercase eyebrow labels.
-
-**Surface treatment.** Every widget state gets rounded corners, the surface fill,
-and the hairline border, so nothing looks like a default egui control. The text
-selection color is a translucent accent.
-
-These are applied by cloning the current `Style`, mutating its `text_styles`,
-`visuals`, and `spacing`, and calling `ctx.set_style(style)`.
-
-## Layout and composition
-
-`update` draws a single `CentralPanel` with the background fill and generous
-margins, wrapped in a vertical `ScrollArea` so the result scrolls when it is
-tall. The content is three sections drawn in order: `header`, `inputs`, and
-`output`.
-
-The recurring surface is the `card` helper, which takes a closure for its body:
-
-```rust
-fn card(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
-    Frame::none()
-        .fill(SURFACE)
-        .rounding(Rounding::same(RADIUS))
-        .stroke(Stroke::new(1.0, BORDER))
-        .inner_margin(Margin::same(SP_MD + SP_XS))
-        .show(ui, |ui| { ui.set_width(ui.available_width()); add_contents(ui); });
-}
-```
-
-Taking `impl FnOnce(&mut egui::Ui)` lets every section compose its own content
-inside a consistently styled surface. The result view iterates
-`compression.placements()` and renders each placement uniformly, with a per card
-**Copy** button that writes to the system clipboard via
-`ui.output_mut(|o| o.copied_text = ...)`.
-
-## Borrow discipline in a frame
-
-There is a small but important ordering rule inside `update`. We `poll_result`
-first (which may mutate `self.state`), then draw. The `inputs` section takes
-`&mut self` because it edits the text buffers and may call `submit`, which sets
-`state` and `rx`. The `output` section then matches on `&self.state` (a shared
-borrow) and only reads. Because submit happens in an earlier statement than the
-output match, there is no conflicting borrow, and a click shows `Loading`
-immediately in the same frame.
+`install_theme`, called once at startup, defines the look from named design
+tokens: a deep charcoal base, layered surfaces, hairline borders, two text
+weights, and a single confident coral accent, plus green and amber for the
+groundedness and quality signals. There is a spacing scale, a type scale mapped
+onto egui's semantic text styles, and rounded bordered widgets across every
+interaction state. The whole look lives in one place, applied by cloning the
+`Style`, mutating its `text_styles`, `visuals`, and `spacing`, and calling
+`set_style`.
 
 ## Rust primitives used in this module
 
-- **trait impl** (`impl eframe::App`): plugs the type into the event loop.
-- **enum sum type** (`UiState`): the explicit, exhaustive state machine.
-- **struct owning state** (`CompressorApp`): runtime, buffers, state, receiver.
-- **`mpsc` channel** (`std::sync::mpsc`): worker to UI handoff, non blocking.
-- **tokio runtime + `spawn`**: runs the async engine call off the UI thread.
-- **`Clone` on `egui::Context`**: a clone wakes the UI when the result is ready.
+- **trait impl** (`impl eframe::App`): plugs into the event loop.
+- **enum sum types** (`UiState`, `EngineKind`): the state machine and engine
+  choice.
+- **`Box` in an enum variant**: keeps the large result off the small variants.
+- **`mpsc` channel + `try_recv`**: non blocking worker to UI handoff.
+- **tokio runtime + boxed futures**: run any selected engine uniformly.
+- **`Clone` on `egui::Context`**: wake the UI when the result is ready.
 - **closures** (`impl FnOnce(&mut Ui)`): the composable `card` helper.
-- **design tokens** (`const` colors, spacing, type scale, radius): one source of
-  truth for the look.
+- **design tokens** (`const` colors, spacing, type scale): one source of truth.

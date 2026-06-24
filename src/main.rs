@@ -1,11 +1,13 @@
 //! Compressor: a desktop marketing tool that collapses the abstraction stack
 //! between a product and the customer who needs it.
 //!
-//! The crate is split into four modules, each with a single responsibility:
+//! The crate is split into modules, each with a single responsibility:
 //!   - `domain`: the typed vocabulary (newtypes, enums, the result struct).
+//!   - `text`: dependency free text primitives (tokenize, stem, syllables).
+//!   - `analysis`: the deterministic measurement layer (TextRank, groundedness, readability, constraints).
 //!   - `prompt`: pure construction of the system and user prompts.
-//!   - `engine`: the async Anthropic Messages API client and JSON parsing.
-//!   - `app`:    the egui UI, the custom theme, and the async to UI bridge.
+//!   - `engine`: the `CompressionEngine` trait and its three implementations (heuristic, hybrid, LLM).
+//!   - `app`: the egui UI, the custom theme, and the async to UI bridge.
 //!
 //! Rust primitives used here:
 //!   - `#![cfg_attr(...)]`: a conditional crate attribute. In release builds it
@@ -18,10 +20,12 @@
 // Hide the console window on Windows in release builds only.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod analysis;
 mod app;
 mod domain;
 mod engine;
 mod prompt;
+mod text;
 
 use eframe::egui;
 
