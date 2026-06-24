@@ -18,6 +18,27 @@ engine, shown with its full work.
 
 ---
 
+## Download
+
+Get the latest build from the **[Releases page](https://github.com/Mattbusel/compressor/releases/latest)**:
+open the most recent release and download `compressor.exe` from under **Assets**.
+It is a single self contained Windows executable, no install required. The
+Heuristic engine runs with no API key; for the Hybrid and LLM engines, paste an
+Anthropic API key into the window (see [Setting the API key](#setting-the-api-key)).
+
+---
+
+## Screenshots
+
+A Hybrid run on the built in **load example** (Ledger), showing the compression
+readout, the promise graded at 100% inked, the placements, and the proof sheet.
+
+![Compressor: input, compression readout, core need, promise graded for groundedness](docs/screenshots/result.png)
+
+![Compressor: Google headlines, landing hero, and the proof sheet with ranked promise impressions](docs/screenshots/proof-sheet.png)
+
+---
+
 ## Three engines behind one interface
 
 The core architectural move is a `CompressionEngine` trait with three
