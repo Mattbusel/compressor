@@ -29,7 +29,31 @@ mod text;
 
 use eframe::egui;
 
+const HELP: &str = "Compressor: collapse the abstraction stack between a product and its customer.
+
+Usage: compressor [--help | --version]
+
+With no arguments, opens the desktop window. The Heuristic engine runs with no
+API key; the Hybrid and LLM engines need an Anthropic API key, pasted into the
+window or set in the ANTHROPIC_API_KEY environment variable.";
+
 fn main() -> eframe::Result {
+    // Tiny flag handling so the binary can be checked from a terminal without
+    // opening a window.
+    if let Some(arg) = std::env::args().nth(1) {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                println!("{HELP}");
+                return Ok(());
+            }
+            "-V" | "--version" => {
+                println!("compressor {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
     // Window configuration: a comfortable default size with a sensible minimum.
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

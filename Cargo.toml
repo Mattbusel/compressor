@@ -1,9 +1,11 @@
 [package]
 name = "compressor"
-version = "0.1.0"
+version = "0.4.0"
 edition = "2021"
 description = "Collapse the abstraction stack between a product and the customer who needs it."
-authors = ["Compressor"]
+authors = ["Matthew Busel"]
+repository = "https://github.com/Mattbusel/compressor"
+readme = "README.md"
 license = "MIT"
 
 [dependencies]
@@ -28,6 +30,11 @@ serde_json = "1"
 
 # Ergonomic, derive based error enums for every fallible path.
 thiserror = "1"
+
+# On Linux, eframe needs a windowing backend picked explicitly because default
+# features are off. Cargo unifies these features with the ones above.
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.29", default-features = false, features = ["x11", "wayland"] }
 
 # Release profile tuned for a small, single binary.
 # opt-level "z"   : optimize aggressively for size.
