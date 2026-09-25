@@ -24,11 +24,31 @@ model backed engines call the Anthropic Messages API (default model
 
 ## Download
 
-Get the latest build from the **[Releases page](https://github.com/Mattbusel/compressor/releases/latest)**:
-open the most recent release and download `compressor.exe` from under **Assets**.
-It is a single self contained Windows executable, no install required. The
-Heuristic engine runs with no API key; for the Hybrid and LLM engines, paste an
+Get the latest build from the **[Releases page](https://github.com/Mattbusel/compressor/releases/latest)**
+and pick the file for your system from under **Assets**:
+
+| System | File |
+| --- | --- |
+| Windows | `compressor-vX.Y.Z-x86_64-pc-windows-msvc.zip` (unzip, then run `compressor.exe`) |
+| macOS, Apple Silicon (M1 and later) | `compressor-vX.Y.Z-aarch64-apple-darwin.tar.gz` |
+| macOS, Intel | `compressor-vX.Y.Z-x86_64-apple-darwin.tar.gz` |
+| Linux x86_64 | `compressor-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` |
+
+Each is a single self contained program, no install required. `SHA256SUMS.txt`
+lets you check the download.
+
+The binaries are not code signed. On Windows, SmartScreen may warn about an
+"unknown publisher": click **More info**, then **Run anyway**. On macOS, the
+first time, right-click the program and choose **Open**.
+
+The Heuristic engine runs with no API key; for the Hybrid and LLM engines, paste an
 Anthropic API key into the window (see [Setting the API key](#setting-the-api-key)).
+`compressor --help` and `compressor --version` print a short usage note without
+opening the window.
+
+There is no `cargo install compressor`: that crate name on crates.io belongs to
+an unrelated audio project. To build it yourself, see
+[Building and running](#building-and-running).
 
 ---
 
@@ -151,7 +171,9 @@ error card. The key is never hardcoded.
 
 ## Building and running
 
-You need a stable Rust toolchain (built with Rust 1.91).
+You need a stable Rust toolchain (built with Rust 1.91). On Linux, install the
+windowing and OpenGL headers first, for example on Debian or Ubuntu:
+`sudo apt-get install libx11-dev libxcursor-dev libxrandr-dev libxi-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev`.
 
 ```bash
 git clone https://github.com/Mattbusel/compressor
