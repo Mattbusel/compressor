@@ -16,6 +16,10 @@ for groundedness** (how much of its claim bearing vocabulary the product
 actually supports), checked for readability and hype, and, for the deterministic
 engine, shown with its full work.
 
+Stack: Rust, egui/eframe (glow renderer), tokio and reqwest with rustls. The
+model backed engines call the Anthropic Messages API (default model
+`claude-opus-4-8`, set in `src/engine/llm.rs`). Ships as one Windows `.exe`.
+
 ---
 
 ## Download
@@ -150,6 +154,8 @@ error card. The key is never hardcoded.
 You need a stable Rust toolchain (built with Rust 1.91).
 
 ```bash
+git clone https://github.com/Mattbusel/compressor
+cd compressor
 cargo run            # development
 cargo run --release  # optimized
 cargo test           # run the analysis and engine unit tests
